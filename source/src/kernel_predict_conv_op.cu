@@ -1,0 +1,244 @@
+// Copyright (c) Microsoft Corporation.
+// Licensed under the MIT License.
+#ifdef GOOGLE_CUDA
+
+#define EIGEN_USE_GPU
+
+#pragma warning(push, 0)
+#include <tensorflow/core/util/gpu_device_functions.h>
+#include <tensorflow/core/framework/op.h>
+#include <tensorflow/core/framework/shape_inference.h>
+#include <tensorflow/core/framework/op_kernel.h>
+#pragma warning(pop)
+
+#include <cuda.h>
+#include <cuda_runtime_api.h>
+#include <device_launch_parameters.h>
+#include <vector>
+
+#include "utils_kernel.h"
+#include "utils_common.h"
+
+#include "kernel_predict_conv_2d_op.h"
+
+namespace tensorflow { namespace functor {
+
+template<typename T>
+__global__ void k_KernelPredictConv2D_nhwc(
+	const	T *const	input_ptr,
+	const	T *const	filter_ptr,
+			T*			output_ptr,
+	const	int64		channels,
+	const	int64		width,
+	const	int64		height,
+	const	int64		kernel_r,
+	const	int64		num_threads
+)
+{
+	for (auto index = threadIdx.x + blockDim.x * blockIdx.x; index < num_threads; index += blockDim.x * gridDim.x)
+	{
+		const auto n = index / channels / width / height;
+		const auto h = index / channels / width % height;
+		const auto w = index / channels % width;
+		const auto c = index % channels;
+		const auto k_stride = kernel_r * kernel_r;
+
+		auto filter_base_ptr = filter_ptr + ((n * height + h) * width + w) * k_stride;
+
+		T res = T(0);
+		for (auto i = 0; i < k_stride; ++i) 
+		{
+			auto o_w = i % kernel_r - kernel_r / 2;
+			auto o_h = i / kernel_r - kernel_r / 2;
+			auto r_w = w + o_w;
+			auto r_h = h + o_h;
+
+			auto input_value = (r_w >= 0 && r_w < width && r_h >= 0 && r_h < height) ?
+				(*(input_ptr + ((n * height + r_h) * width + r_w) * channels + c)) : T(0);
+			res += input_value * filter_base_ptr[i];
+		}
+		output_ptr[index] = res;
+	}
+}
+
+template<typename T>
+__global__ void k_KernelPredictConv2DGradInput_nhwc(
+	const	T* const	filter_ptr,
+	const	T* const	out_backprop_ptr,
+			T*			output_ptr,
+	const	int64		channels,
+	const	int64		width,
+	const	int64		height,
+	const	int64		kernel_r,
+	const	int64		num_threads
+)
+{
+	for (auto index = threadIdx.x + blockDim.x * blockIdx.x; index < num_threads; index += blockDim.x * gridDim.x)
+	{
+		const auto n = index / channels / width / height;
+		const auto h = index / channels / width % height;
+		const auto w = index / channels % width;
+		const auto c = index % channels;
+		const auto k_stride = kernel_r * kernel_r;
+
+		T res = T(0);
+		for (auto i = 0; i < k_stride; ++i)
+		{
+			auto o_w = i % kernel_r - kernel_r / 2;
+			auto o_h = i / kernel_r - kernel_r / 2;
+			auto r_w = w + o_w;
+			auto r_h = h + o_h;
+
+			if (r_w < 0 || r_w >= width || r_h < 0 || r_h >= height)
+				continue;
+			auto out_backprop_value = *(out_backprop_ptr + ((n * height + r_h) * width + r_w) * channels + c);
+			auto filter_value = *(filter_ptr + ((n * height + r_h) * width + r_w) * k_stride + k_stride - i - 1);
+			res += out_backprop_value * filter_value;
+		}
+		output_ptr[index] = res;
+	}
+}
+
+template<typename T>
+__global__ void k_KernelPredictConv2DGradFilter_nhwc(
+	const	T* const	input_ptr,
+	const	T* const	out_backprop,
+			T*			output_ptr,
+	const	int64		channels,
+	const	int64		width,
+	const	int64		height,
+	const	int64		kernel_r,
+	const	int64		num_threads
+)
+{
+	for (auto index = threadIdx.x + blockDim.x * blockIdx.x; index < num_threads; index += blockDim.x * gridDim.x)
+	{
+		const auto k_stride = kernel_r * kernel_r;
+		const auto n = index / k_stride / width / height;
+		const auto h = index / k_stride / width % height;
+		const auto w = index / k_stride % width;
+		const auto k = index % k_stride;
+
+		auto o_w = k % kernel_r - kernel_r / 2;
+		auto o_h = k / kernel_r - kernel_r / 2;
+
+		auto r_w = w + o_w;
+		auto r_h = h + o_h;
+
+		T res = T(0);
+		for (auto i = 0; i < channels; ++i)
+		{
+			auto out_backprop_value = *(out_backprop + (((n * height + h) * width + w) * channels) + i);
+			auto input_value = (r_w >= 0 && r_w < width&& r_h >= 0 && r_h < height) ? 
+				(*(input_ptr + ((n * height + r_h) * width + r_w) * channels + i)) : T(0);
+			res += out_backprop_value * input_value;
+		}
+
+		output_ptr[index] = res;
+	}
+}
+
+template<typename T>
+void KernelPredictConv2D<T, GpuDevice>::operator()(const GpuDevice& d, const Tensor* input, const Tensor* filter, 
+	Tensor* output, TensorFormat data_format)
+{
+	auto output_shape = output->shape();
+	auto output_height = GetTensorDim(output_shape, data_format, 'H');
+	auto output_width = GetTensorDim(output_shape, data_format, 'W');
+	auto output_channel = GetTensorDim(output_shape, data_format, 'C');
+
+	auto filter_shape = filter->shape();
+	auto filter_length = GetTensorDim(filter_shape, data_format, 'C');
+	auto filter_radius = static_cast<int64>(std::sqrt(filter_length));
+	assert(filter_radius * filter_radius == filter_length);
+
+	switch (data_format)
+	{
+	case FORMAT_NHWC:
+		k_KernelPredictConv2D_nhwc<T> <<<BLOCKS, THREADS, 0, d.stream() >>> (
+			input->unaligned_flat<T>().data(),
+			filter->unaligned_flat<T>().data(),
+			output->unaligned_flat<T>().data(),
+			output_channel,
+			output_width,
+			output_height,
+			filter_radius,
+			output_shape.num_elements());
+		break;
+	case FORMAT_NCHW:
+		break;
+	default:
+		break;
+	}
+}
+
+template<typename T>
+void KernelPredictConv2DGradInput<T, GpuDevice>::operator()(const GpuDevice& d, const Tensor* filter, const Tensor* out_backprop, Tensor* output, TensorFormat data_format)
+{
+	auto output_shape = output->shape();
+	auto output_height = GetTensorDim(output_shape, data_format, 'H');
+	auto output_width = GetTensorDim(output_shape, data_format, 'W');
+	auto output_channel = GetTensorDim(output_shape, data_format, 'C');
+
+	auto filter_shape = filter->shape();
+	auto filter_length = GetTensorDim(filter_shape, data_format, 'C');
+	auto filter_radius = static_cast<int64>(std::sqrt(filter_length));
+	assert(filter_radius * filter_radius == filter_length);
+
+	switch (data_format)
+	{
+	case FORMAT_NHWC:
+		k_KernelPredictConv2DGradInput_nhwc<T><<<BLOCKS, THREADS, 0, d.stream() >>>(
+			filter->unaligned_flat<T>().data(),
+			out_backprop->unaligned_flat<T>().data(),
+			output->unaligned_flat<T>().data(),
+			output_channel,
+			output_width,
+			output_height,
+			filter_radius,
+			output_shape.num_elements());
+		break;
+	case FORMAT_NCHW:
+		break;
+	default:
+		break;
+	}
+}
+
+template<typename T>
+void KernelPredictConv2DGradFilter<T, GpuDevice>::operator()(const GpuDevice& d, const Tensor* input, const Tensor* out_backprop, Tensor* output, TensorFormat data_format)
+{
+	auto output_shape = output->shape();
+	auto output_height = GetTensorDim(output_shape, data_format, 'H');
+	auto output_width = GetTensorDim(output_shape, data_format, 'W');
+	auto output_channel = GetTensorDim(output_shape, data_format, 'C');
+	auto filter_radius = static_cast<int64>(std::sqrt(output_channel));
+	assert(filter_radius * filter_radius == output_channel);
+
+	auto input_shape = input->shape();
+	auto input_channel = GetTensorDim(input_shape, data_format, 'C');
+
+	switch (data_format)
+	{
+	case FORMAT_NHWC:
+		k_KernelPredictConv2DGradFilter_nhwc<T><<<BLOCKS, THREADS, 0, d.stream()>>>(
+			input->unaligned_flat<T>().data(),
+			out_backprop->unaligned_flat<T>().data(),
+			output->unaligned_flat<T>().data(),
+			input_channel,
+			output_width,
+			output_height,
+			filter_radius,
+			output_shape.num_elements());
+		break;
+	case FORMAT_NCHW:
+		break;
+	default:
+		break;
+	}
+}
+
+}
+}
+
+#endif
