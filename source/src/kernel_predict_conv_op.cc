@@ -14,11 +14,23 @@ REGISTER_OP("KernelPredictConv2D")
 .Input("input: T")
 .Input("filter: T")
 .Output("output: T")
+.Attr("stride: int")
 .Attr(GetConvnetDataFormatAttrString())
 .Attr("T: {float, float16}")
 .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
+	std::string data_format_str;
+	TF_RETURN_IF_ERROR(c->GetAttr("data_format", &data_format_str));
+	TensorFormat data_format;
+	FormatFromString(data_format_str, &data_format);
+	int64 stride;
+	TF_RETURN_IF_ERROR(c->GetAttr("stride", &stride));
+
 	shape_inference::ShapeHandle conv_input_shape;
 	TF_RETURN_IF_ERROR(c->WithRank(c->input(0), 4, &conv_input_shape));
+	auto H = c->Dim(conv_input_shape, GetTensorDimIndex(data_format, 'H'));
+	auto W = c->Dim(conv_input_shape, GetTensorDimIndex(data_format, 'W'));
+	c->Divide(H, c->MakeDim(stride), true, &H);
+	c->Divide(W, c->MakeDim(stride), true, &W);
 	c->set_output(0, conv_input_shape);
 	return Status::OK();
 })
@@ -29,6 +41,7 @@ REGISTER_OP("KernelPredictConv2DGradFilter")
 .Input("filter_size: int32")
 .Input("out_backprop: T")
 .Output("output: T")
+.Attr("stride: int")
 .Attr(GetConvnetDataFormatAttrString())
 .Attr("T: {float, float16}")
 .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
@@ -45,6 +58,7 @@ REGISTER_OP("KernelPredictConv2DGradInput")
 .Input("filter: T")
 .Input("out_backprop: T")
 .Output("output: T")
+.Attr("stride: int")
 .Attr(GetConvnetDataFormatAttrString())
 .Attr("T: {float, float16}")
 .SetShapeFn([](::tensorflow::shape_inference::InferenceContext* c) {
@@ -61,12 +75,14 @@ class KernelPredictConv2D : public OpKernel
 {
 public:
 	explicit KernelPredictConv2D(OpKernelConstruction* context) : OpKernel(context), 
-		data_format_(FORMAT_NHWC)
+		stride_(1), data_format_(FORMAT_NHWC)
 	{
 		std::string data_format;
 		OP_REQUIRES_OK(context, context->GetAttr("data_format", &data_format));
 		OP_REQUIRES(context, FormatFromString(data_format, &this->data_format_), 
 			errors::InvalidArgument("Invalid data format: ", data_format));
+
+		OP_REQUIRES_OK(context, context->GetAttr("stride", &stride_));
 	}
 
 	void Compute(OpKernelContext* context) override
@@ -78,11 +94,12 @@ public:
 		OP_REQUIRES_OK(context, context->allocate_output("output", input.shape(), &output));
 
 		functor::KernelPredictConv2D<T, Device> kernelPredictConv2D;
-		kernelPredictConv2D(context->eigen_device<Device>(), &input, &filter, output, this->data_format_);
+		kernelPredictConv2D(context->eigen_device<Device>(), &input, &filter, output, this->stride_, this->data_format_);
 	}
 
 protected:
 	TensorFormat data_format_;
+	int64 stride_;
 };
 
 template <typename T, typename Device>
@@ -90,12 +107,14 @@ class KernelPredictConv2DGradFilter : public OpKernel
 {
 public:
 	explicit KernelPredictConv2DGradFilter(OpKernelConstruction* context) : OpKernel(context),
-		data_format_(FORMAT_NHWC)
+		stride_(1), data_format_(FORMAT_NHWC)
 	{
 		std::string data_format;
 		OP_REQUIRES_OK(context, context->GetAttr("data_format", &data_format));
 		OP_REQUIRES(context, FormatFromString(data_format, &this->data_format_),
 			errors::InvalidArgument("Invalid data format: ", data_format));
+
+		OP_REQUIRES_OK(context, context->GetAttr("stride", &stride_));
 	}
 
 	void Compute(OpKernelContext* context) override
@@ -111,11 +130,12 @@ public:
 		OP_REQUIRES_OK(context, context->allocate_output("output", filter_shape, &output));
 
 		functor::KernelPredictConv2DGradFilter<T, Device> kernelPredictConv2DGradFilter;
-		kernelPredictConv2DGradFilter(context->eigen_device<Device>(), &input, &out_backprop, output, this->data_format_);
+		kernelPredictConv2DGradFilter(context->eigen_device<Device>(), &input, &out_backprop, output, this->stride_, this->data_format_);
 	}
 
 protected:
 	TensorFormat data_format_;
+	int64 stride_;
 };
 
 template <typename T, typename Device>
@@ -123,12 +143,14 @@ class KernelPredictConv2DGradInput : public OpKernel
 {
 public:
 	explicit KernelPredictConv2DGradInput(OpKernelConstruction* context) : OpKernel(context),
-		data_format_(FORMAT_NHWC)
+		stride_(1), data_format_(FORMAT_NHWC)
 	{
 		std::string data_format;
 		OP_REQUIRES_OK(context, context->GetAttr("data_format", &data_format));
 		OP_REQUIRES(context, FormatFromString(data_format, &this->data_format_),
 			errors::InvalidArgument("Invalid data format: ", data_format));
+
+		OP_REQUIRES_OK(context, context->GetAttr("stride", &stride_));
 	}
 
 	void Compute(OpKernelContext* context) override
@@ -145,11 +167,12 @@ public:
 		OP_REQUIRES_OK(context, context->allocate_output("output", input_shape, &output));
 
 		functor::KernelPredictConv2DGradInput<T, Device> kernelPredictConv2DGradInput;
-		kernelPredictConv2DGradInput(context->eigen_device<Device>(), &filter, &out_backprop, output, this->data_format_);
+		kernelPredictConv2DGradInput(context->eigen_device<Device>(), &filter, &out_backprop, output, this->stride_, this->data_format_);
 	}
 
 protected:
 	TensorFormat data_format_;
+	int64 stride_;
 };
 
 REGISTER_KERNEL_BUILDER(Name("KernelPredictConv2D").Device(DEVICE_GPU).TypeConstraint<float>("T"), KernelPredictConv2D<float, GpuDevice>)

@@ -11,7 +11,7 @@ from tensorflow.python.keras import constraints
 from tensorflow.python.keras import initializers
 from tensorflow.python.keras import regularizers
 
-from ..parser import depthwise_2d_fast, kernel_predict_conv2d
+from ..parser import depthwise_2d_fast, kernel_predict_conv2d, ExportLevel, get_export_level
 
 
 class FastDepthwiseConv2D(conv_base.DepthwiseConv2D):
@@ -20,25 +20,30 @@ class FastDepthwiseConv2D(conv_base.DepthwiseConv2D):
                  strides=(1, 1),
                  padding='valid',
                  depth_multiplier=1,
+                 depthwise_initializer='glorot_uniform',
                  data_format=None,
                  use_bias=True,
+                 trainable=True,
                  **kwargs):
         super(FastDepthwiseConv2D,
               self).__init__(kernel_size=kernel_size,
                              strides=strides,
                              padding=padding,
+                             depthwise_initializer=depthwise_initializer,
                              depth_multiplier=depth_multiplier,
                              data_format=data_format,
                              use_bias=use_bias,
+                             trainable=trainable,
                              **kwargs)
-        self.use_native = None
+        self.use_native = False if get_export_level() == ExportLevel.SIMPLIFY else None
 
     def call(self, inputs):
         if self.use_native is None:
             try:
+                assert self.data_format == 'channels_last'
                 outputs = depthwise_2d_fast(inputs, self.depthwise_kernel)
                 self.use_native = True
-            except:
+            except BaseException:
                 outputs = backend.depthwise_conv2d(
                     inputs,
                     self.depthwise_kernel,
@@ -47,6 +52,7 @@ class FastDepthwiseConv2D(conv_base.DepthwiseConv2D):
                     dilation_rate=self.dilation_rate,
                     data_format=self.data_format)
         elif self.use_native:
+            assert self.data_format == 'channels_last'
             outputs = depthwise_2d_fast(inputs, self.depthwise_kernel)
         else:
             outputs = backend.depthwise_conv2d(
@@ -70,6 +76,7 @@ class FastDepthwiseConv2D(conv_base.DepthwiseConv2D):
 
 class KernelPredictConv2D(layers.Layer):
     def __init__(self,
+                 stride=1,
                  data_format=None,
                  use_bias=True,
                  bias_initializer='zeros',
@@ -82,6 +89,7 @@ class KernelPredictConv2D(layers.Layer):
         super(KernelPredictConv2D, self).__init__(trainable=True,
                                                   name=name,
                                                   dtype=dtype)
+        self.stride = stride
         self.data_format = data_format
         self.use_bias = use_bias
         self.bias_initializer = initializers.get(bias_initializer)
@@ -102,21 +110,22 @@ class KernelPredictConv2D(layers.Layer):
 
         input_channel = feat_shape[
             1] if self.data_format == 'channels_first' else feat_shape[-1]
-        self.bias = self.add_weight(name='bias',
-                                    shape=(input_channel, ),
-                                    initializer=self.bias_initializer,
-                                    regularizer=self.bias_regularizer,
-                                    constraint=self.bias_constraint,
-                                    trainable=True,
-                                    dtype=self.dtype)
+        if self.use_bias:
+            self.bias = self.add_weight(name='bias',
+                                        shape=(input_channel, ),
+                                        initializer=self.bias_initializer,
+                                        regularizer=self.bias_regularizer,
+                                        constraint=self.bias_constraint,
+                                        trainable=True,
+                                        dtype=self.dtype)
         self.built = True
 
-    def call(self, inputs: List[tf.Tensor]):
+    def call(self, inputs: List[tf.Tensor], training=None, **kwargs):
         assert len(inputs) == 2
         inputs: Tuple[tf.Tensor, tf.Tensor] = tuple(inputs)
         feat, kernel = inputs
 
-        output = kernel_predict_conv2d(feat, kernel, self._data_format)
+        output = kernel_predict_conv2d(feat, kernel, self.stride, self._data_format)
 
         if self.norm is not None:
             output = self.norm(output)

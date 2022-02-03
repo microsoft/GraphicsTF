@@ -17,32 +17,32 @@ namespace functor {
 
 template <typename T, typename Device>
 struct KernelPredictConv2D {
-	virtual void operator()(const Device& d, const Tensor* input, const Tensor* filter, Tensor* output, TensorFormat data_format) = 0;
+	virtual void operator()(const Device& d, const Tensor* input, const Tensor* filter, Tensor* output, const int64 stride, TensorFormat data_format) = 0;
 };
 
 template <typename T, typename Device>
 struct KernelPredictConv2DGradInput {
-	virtual void operator()(const Device& d, const Tensor* filter, const Tensor* out_backprop, Tensor* output, TensorFormat data_format) = 0;
+	virtual void operator()(const Device& d, const Tensor* filter, const Tensor* out_backprop, Tensor* output, const int64 stride, TensorFormat data_format) = 0;
 };
 
 template <typename T, typename Device>
 struct KernelPredictConv2DGradFilter {
-	virtual void operator()(const Device& d, const Tensor* input, const Tensor* out_backprop, Tensor* output, TensorFormat data_format) = 0;
+	virtual void operator()(const Device& d, const Tensor* input, const Tensor* out_backprop, Tensor* output, const int64 stride, TensorFormat data_format) = 0;
 };
 
 template <typename T>
 struct KernelPredictConv2D<T, GpuDevice> {
-	virtual void operator()(const GpuDevice& d, const Tensor* input, const Tensor* filter, Tensor* output, TensorFormat data_format);
+	virtual void operator()(const GpuDevice& d, const Tensor* input, const Tensor* filter, Tensor* output, const int64 stride, TensorFormat data_format);
 };
 
 template <typename T>
 struct KernelPredictConv2DGradInput<T, GpuDevice> {
-	virtual void operator()(const GpuDevice& d, const Tensor* filter, const Tensor* out_backprop, Tensor* output, TensorFormat data_format);
+	virtual void operator()(const GpuDevice& d, const Tensor* filter, const Tensor* out_backprop, Tensor* output, const int64 stride, TensorFormat data_format);
 };
 
 template <typename T>
 struct KernelPredictConv2DGradFilter<T, GpuDevice> {
-	virtual void operator()(const GpuDevice& d, const Tensor* input, const Tensor* out_backprop, Tensor* output, TensorFormat data_format);
+	virtual void operator()(const GpuDevice& d, const Tensor* input, const Tensor* out_backprop, Tensor* output, const int64 stride, TensorFormat data_format);
 };
 
 template struct KernelPredictConv2D<float, GpuDevice>;

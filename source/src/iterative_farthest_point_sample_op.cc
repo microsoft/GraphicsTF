@@ -1,6 +1,5 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
-
 #pragma warning(push, 0)
 #include <tensorflow/core/framework/op.h>
 #include <tensorflow/core/framework/shape_inference.h>
