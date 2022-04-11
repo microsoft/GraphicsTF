@@ -39,6 +39,8 @@ def generate_image_grid(x_input, scale, bias, name='GenerateGrid'):
             bias = bias[:, tf.newaxis, tf.newaxis, :]
         elif b_dims == 4:
             pass
+        elif b_dims == 5:
+            pass
         else:
             raise NotImplementedError
 
