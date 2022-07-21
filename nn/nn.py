@@ -1,10 +1,13 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
+from math import sqrt
 from typing import Optional, List, Callable, Dict
 
 import logging
 import tensorflow as tf
 import numpy as np
+
+# pylint: disable=no-value-for-parameter
 
 
 def softmax(x, axis=-1):
@@ -90,6 +93,9 @@ def group_transpose_conv(x: tf.Tensor,
                          data_format: str = 'NHWC',
                          disable_3d: bool = True,
                          name: Optional[str] = None):
+    """
+    Group convolution
+    """
     data_format = format_check(x, data_format)
     with tf.name_scope(name, default_name='GroupTransConv', values=[x, w]):
         conv_kargs = dict(data_format=data_format, strides=strides, padding=padding, output_shape=out_shape)
@@ -102,3 +108,24 @@ def group_transpose_conv(x: tf.Tensor,
         else:
             x = conv_func(x, w, **conv_kargs)
         return x
+
+
+def kernel_prediction(in_data: tf.Tensor, in_weight: tf.Tensor, name='kernel_prediction'):
+    """
+    Kernel prediction convolution operation
+    """
+    with tf.name_scope(name):
+        h_size, w_size, k2_size = in_weight.shape.as_list()[1:]
+        k_size = int(sqrt(k2_size))
+        assert k2_size == k_size ** 2
+        p_size = k_size // 2
+        p_data = tf.pad(in_data, paddings=[[0, 0], [p_size, p_size], [p_size, p_size], [0, 0]])
+        e_data = list()
+        for k_idx in range(k2_size):
+            w_idx = k_idx % k_size
+            h_idx = k_idx // k_size
+            e_data.append(p_data[:, h_idx: h_idx + h_size, w_idx: w_idx + w_size, :])
+        e_data = tf.stack(e_data, axis=-2)
+        s_data = e_data * in_weight[..., tf.newaxis]
+        s_data = tf.reduce_sum(s_data, axis=-2)
+        return s_data
