@@ -1,11 +1,10 @@
 # Copyright (c) Microsoft Corporation.
 # Licensed under the MIT License.
-import logging
 from enum import Enum
 from typing import List
 from abc import abstractmethod
 
-from tensorflow.keras import layers
+from tensorflow.python.keras import layers  # pylint: disable=no-name-in-module
 
 
 
@@ -45,12 +44,11 @@ class BasicLossProxy(layers.Layer):
         """
         return InputKeyMode.LIST
 
-    @abstractmethod
     def _assign_loss_names(self):
         """
         Assign the names of contained losses
         """
-        return list()
+        self._losses_name = [self.name]
 
     @abstractmethod
     def call_internal(self, inputs, option=None, **kwargs):
