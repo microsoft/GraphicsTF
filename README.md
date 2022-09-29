@@ -6,9 +6,9 @@ GraphicsDL is a general TensorFlow library for graphics deep learning, which con
 
 ### [StyleGAN2](models/stylegan.py)
 
-### [PointNet++](model/pointnet.py)
+### [PointNet++](models/pointnet.py)
 
-### [PointRend](model/pointrend.py)
+### [PointRend](models/pointrend.py)
 
 ## Layers
 
